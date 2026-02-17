@@ -9,7 +9,14 @@ import { calculateEMI, calculateDebtToIncome, getRiskLevel, getPersonalizedTips 
 import { useToast } from '@/hooks/use-toast';
 import { useVoice } from '@/hooks/useVoice';
 
-export function LoanChecker() {
+import { getFinancialAdvice } from '@/lib/interpreter';
+import { Language } from '@/lib/languages';
+
+interface LoanCheckerProps {
+  currentLanguage: Language;
+}
+
+export function LoanChecker({ currentLanguage }: LoanCheckerProps) {
   const [principal, setPrincipal] = useState('');
   const [rate, setRate] = useState('10');
   const [tenure, setTenure] = useState('60');
@@ -24,7 +31,7 @@ export function LoanChecker() {
   const { addLoan } = useLoans();
   const { profile } = useProfile();
   const { toast } = useToast();
-  const { speak } = useVoice();
+  const { speak } = useVoice(currentLanguage);
 
   const handleCheck = () => {
     const p = parseFloat(principal);
@@ -42,9 +49,18 @@ export function LoanChecker() {
 
     setResult({ emi, dti, risk, tips, warning });
 
-    // Speak the result
-    const message = `Your EMI would be ${Math.round(emi)} rupees per month. Debt-to-income ratio is ${dti.toFixed(1)} percent. Risk level: ${risk.label}. ${warning || ''}`;
-    speak(message);
+    setResult({ emi, dti, risk, tips, warning });
+
+    // Speak the result in the user's language
+    // We use the LLM to humanize the data into the target language
+    getFinancialAdvice({
+      emi: Math.round(emi),
+      debtToIncome: dti.toFixed(1),
+      risk: risk.label,
+      warning
+    }, currentLanguage).then(response => {
+      speak(response);
+    });
   };
 
   const handleSaveLoan = () => {
@@ -90,11 +106,10 @@ export function LoanChecker() {
 
         {result && (
           <div className="space-y-3 animate-fade-in">
-            <div className={`p-4 rounded-lg border ${
-              result.risk.level === 'safe' ? 'bg-primary/10 border-primary/30' :
+            <div className={`p-4 rounded-lg border ${result.risk.level === 'safe' ? 'bg-primary/10 border-primary/30' :
               result.risk.level === 'caution' ? 'bg-warning/10 border-warning/30' :
-              'bg-destructive/10 border-destructive/30'
-            }`}>
+                'bg-destructive/10 border-destructive/30'
+              }`}>
               <div className="grid grid-cols-2 gap-3 text-sm">
                 <div>
                   <span className="text-muted-foreground">Monthly EMI</span>
@@ -102,11 +117,10 @@ export function LoanChecker() {
                 </div>
                 <div>
                   <span className="text-muted-foreground">Risk Level</span>
-                  <p className={`font-display font-bold text-lg ${
-                    result.risk.level === 'safe' ? 'text-primary' :
+                  <p className={`font-display font-bold text-lg ${result.risk.level === 'safe' ? 'text-primary' :
                     result.risk.level === 'caution' ? 'text-warning' :
-                    'text-destructive'
-                  }`}>{result.risk.label}</p>
+                      'text-destructive'
+                    }`}>{result.risk.label}</p>
                 </div>
                 <div>
                   <span className="text-muted-foreground">Debt-to-Income</span>

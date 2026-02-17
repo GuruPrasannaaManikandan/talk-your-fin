@@ -36,7 +36,8 @@ export function useTransactions() {
       const { data, error } = await supabase
         .from('transactions')
         .select('*')
-        .order('date', { ascending: false });
+        .select('*')
+        .order('created_at', { ascending: false });
       if (error) throw error;
       return data as Transaction[];
     },
@@ -66,5 +67,21 @@ export function useTransactions() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['transactions'] }),
   });
 
-  return { transactions, isLoading, addTransaction, deleteTransaction };
+  const editTransaction = useMutation({
+    mutationFn: async ({ id, updates }: { id: string; updates: Partial<Transaction> }) => {
+      const { error } = await supabase.from('transactions').update(updates).eq('id', id);
+      if (error) throw error;
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['transactions'] }),
+  });
+
+  const clearTransactions = useMutation({
+    mutationFn: async () => {
+      const { error } = await supabase.from('transactions').delete().neq('id', '00000000-0000-0000-0000-000000000000'); // Delete all
+      if (error) throw error;
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['transactions'] }),
+  });
+
+  return { transactions, isLoading, addTransaction, deleteTransaction, editTransaction, clearTransactions };
 }

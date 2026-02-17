@@ -1,117 +1,67 @@
 import { useState, useCallback, useRef } from 'react';
+import { Language, RESPONSES, SUPPORTED_LANGUAGES } from '@/lib/languages';
 
-interface VoiceCommand {
-  intent: 'add_income' | 'add_expense' | 'check_loan' | 'show_dashboard' | 'financial_health' | 'unknown';
-  amount?: number;
-  category?: string;
-  loanAmount?: number;
-  rawText: string;
-}
-
-export function useVoice() {
+export function useVoice(currentLanguage: Language = 'en-US') {
   const [isListening, setIsListening] = useState(false);
   const [transcript, setTranscript] = useState('');
-  const [lastCommand, setLastCommand] = useState<VoiceCommand | null>(null);
+  const [finalTranscript, setFinalTranscript] = useState('');
   const recognitionRef = useRef<any>(null);
 
-  const speak = useCallback((text: string) => {
+  const getVoiceCode = useCallback((lang: Language) => {
+    return SUPPORTED_LANGUAGES.find(l => l.code === lang)?.voiceCode || 'en-US';
+  }, []);
+
+  const speak = useCallback((text: string, langOverride?: Language) => {
+    if (!('speechSynthesis' in window)) return;
     const synth = window.speechSynthesis;
     synth.cancel();
     const utterance = new SpeechSynthesisUtterance(text);
-    utterance.rate = 0.95;
+    utterance.lang = getVoiceCode(langOverride || currentLanguage);
+    utterance.rate = 0.9;
     utterance.pitch = 1;
     utterance.volume = 1;
     synth.speak(utterance);
-  }, []);
-
-  const parseCommand = useCallback((text: string): VoiceCommand => {
-    const lower = text.toLowerCase().trim();
-
-    // Add expense
-    const expenseMatch = lower.match(/(?:add|log|record)\s+(?:an?\s+)?expense\s+(?:of\s+)?(\d+)\s*(.*)?/);
-    if (expenseMatch || lower.includes('expense') || lower.includes('spent')) {
-      const amountMatch = lower.match(/(\d+)/);
-      const amount = amountMatch ? parseInt(amountMatch[1]) : undefined;
-      const categoryWords = lower.replace(/(?:add|log|record|an?|expense|of|spent|for)\s*/gi, '').replace(/\d+/g, '').trim();
-      return {
-        intent: 'add_expense',
-        amount,
-        category: categoryWords || 'other',
-        rawText: text,
-      };
-    }
-
-    // Add income / salary
-    const incomeMatch = lower.match(/(?:my\s+)?(?:salary|income|earning)\s+(?:is\s+)?(\d+)/);
-    if (incomeMatch || lower.includes('income') || lower.includes('salary')) {
-      const amountMatch = lower.match(/(\d+)/);
-      return {
-        intent: 'add_income',
-        amount: amountMatch ? parseInt(amountMatch[1]) : undefined,
-        category: 'salary',
-        rawText: text,
-      };
-    }
-
-    // Check loan
-    if (lower.includes('loan') || lower.includes('borrow') || lower.includes('emi')) {
-      const amountMatch = lower.match(/(\d+)/);
-      let loanAmount = amountMatch ? parseInt(amountMatch[1]) : undefined;
-      if (lower.includes('lakh')) loanAmount = (loanAmount || 0) * 100000;
-      if (lower.includes('crore')) loanAmount = (loanAmount || 0) * 10000000;
-      return {
-        intent: 'check_loan',
-        loanAmount,
-        rawText: text,
-      };
-    }
-
-    // Dashboard
-    if (lower.includes('dashboard') || lower.includes('show') || lower.includes('overview')) {
-      return { intent: 'show_dashboard', rawText: text };
-    }
-
-    // Financial health
-    if (lower.includes('health') || lower.includes('how am i') || lower.includes('advice') || lower.includes('financial')) {
-      return { intent: 'financial_health', rawText: text };
-    }
-
-    return { intent: 'unknown', rawText: text };
-  }, []);
+  }, [currentLanguage, getVoiceCode]);
 
   const startListening = useCallback(() => {
     const SpeechRecognitionAPI = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (!SpeechRecognitionAPI) {
-      speak('Speech recognition is not supported in this browser.');
+      speak(RESPONSES[currentLanguage].error);
       return;
     }
 
     const recognition = new SpeechRecognitionAPI();
     recognition.continuous = false;
     recognition.interimResults = true;
-    recognition.lang = 'en-US';
+    recognition.lang = getVoiceCode(currentLanguage);
 
-    recognition.onstart = () => setIsListening(true);
+    recognition.onstart = () => {
+      setIsListening(true);
+      setTranscript('');
+      setFinalTranscript('');
+    };
+
     recognition.onend = () => setIsListening(false);
 
-    recognition.onresult = (event: SpeechRecognitionEvent) => {
+    recognition.onresult = (event: any) => {
       const current = event.results[event.results.length - 1];
       const text = current[0].transcript;
       setTranscript(text);
 
       if (current.isFinal) {
-        const command = parseCommand(text);
-        setLastCommand(command);
+        setFinalTranscript(text);
       }
     };
 
     recognition.onerror = () => {
       setIsListening(false);
+      speak(RESPONSES[currentLanguage].error);
     };
 
     recognitionRef.current = recognition;
     recognition.start();
-  }, [parseCommand, speak]);
+    speak(RESPONSES[currentLanguage].listening);
+  }, [currentLanguage, getVoiceCode, speak]);
 
   const stopListening = useCallback(() => {
     recognitionRef.current?.stop();
@@ -121,10 +71,10 @@ export function useVoice() {
   return {
     isListening,
     transcript,
-    lastCommand,
+    finalTranscript,
     startListening,
     stopListening,
     speak,
-    clearCommand: () => setLastCommand(null),
+    clearTranscript: () => { setTranscript(''); setFinalTranscript(''); }
   };
 }

@@ -29,7 +29,7 @@ export function useFinancialAnalytics() {
       return d.getMonth() === currentMonth && d.getFullYear() === currentYear;
     });
 
-    const monthlyIncome = thisMonthTxns
+    const monthlyIncome = (Number(profile?.monthly_income) || 0) + thisMonthTxns
       .filter((t) => t.type === 'income')
       .reduce((sum, t) => sum + Number(t.amount), 0);
 

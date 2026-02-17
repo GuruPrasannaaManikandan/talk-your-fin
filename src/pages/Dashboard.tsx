@@ -1,9 +1,10 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useState, useEffect } from 'react';
 import { useAuth } from '@/hooks/useAuth';
 import { useVoice } from '@/hooks/useVoice';
 import { useTransactions } from '@/hooks/useTransactions';
 import { useFinancialAnalytics } from '@/hooks/useFinancialAnalytics';
 import { useProfile } from '@/hooks/useProfile';
+import { useCommandInterpreter } from '@/hooks/useCommandInterpreter';
 import { StatsCards } from '@/components/StatsCards';
 import { DashboardCharts } from '@/components/DashboardCharts';
 import { TransactionPanel } from '@/components/TransactionPanel';
@@ -13,81 +14,84 @@ import { SafetyBanner } from '@/components/SafetyBanner';
 import { ProfileSettings } from '@/components/ProfileSettings';
 import { VoiceButton } from '@/components/VoiceButton';
 import { Button } from '@/components/ui/button';
-import { LogOut, Settings } from 'lucide-react';
+import { LogOut, Settings, Globe, Loader2 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
+import { Language, SUPPORTED_LANGUAGES } from '@/lib/languages';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 
 export default function Dashboard() {
   const { signOut, user } = useAuth();
-  const { isListening, transcript, lastCommand, startListening, stopListening, speak, clearCommand } = useVoice();
-  const { addTransaction } = useTransactions();
+  const { addTransaction, editTransaction, clearTransactions } = useTransactions();
+  const [currentLanguage, setCurrentLanguage] = useState<Language>('en-US');
+  const [debugMode, setDebugMode] = useState(false);
+  const { isListening, transcript, finalTranscript, startListening, stopListening, speak, clearTranscript } = useVoice(currentLanguage);
+  const { processCommand, isProcessing } = useCommandInterpreter();
   const { profile } = useProfile();
   const analytics = useFinancialAnalytics();
   const { toast } = useToast();
   const [showSettings, setShowSettings] = useState(false);
   const [activeTab, setActiveTab] = useState<'dashboard' | 'loans'>('dashboard');
 
-  // Handle voice commands
-  const handleVoiceCommand = useCallback(() => {
-    if (!lastCommand) return;
-
-    switch (lastCommand.intent) {
-      case 'add_expense':
-        if (lastCommand.amount) {
-          addTransaction.mutate(
-            { type: 'expense', amount: lastCommand.amount, category: lastCommand.category || 'other' },
-            {
-              onSuccess: () => {
-                speak(`Added expense of ${lastCommand.amount} rupees for ${lastCommand.category || 'other'}.`);
-                toast({ title: `Expense added: ₹${lastCommand.amount}` });
-              },
-            }
-          );
-        } else {
-          speak('I could not detect the amount. Please say something like "Add expense 2000 groceries".');
-        }
-        break;
-
-      case 'add_income':
-        if (lastCommand.amount) {
-          addTransaction.mutate(
-            { type: 'income', amount: lastCommand.amount, category: lastCommand.category || 'salary' },
-            {
-              onSuccess: () => {
-                speak(`Added income of ${lastCommand.amount} rupees.`);
-                toast({ title: `Income added: ₹${lastCommand.amount}` });
-              },
-            }
-          );
-        } else {
-          speak('I could not detect the amount. Please say something like "My salary is 25000".');
-        }
-        break;
-
-      case 'check_loan':
-        setActiveTab('loans');
-        speak('Opening the loan checker. Please enter the loan details to check eligibility.');
-        break;
-
-      case 'show_dashboard':
-        setActiveTab('dashboard');
-        speak(`Here's your dashboard. Your health score is ${analytics.healthScore} out of 100. Monthly income is ${analytics.monthlyIncome} rupees and expenses are ${analytics.monthlyExpenses} rupees.`);
-        break;
-
-      case 'financial_health':
-        const healthMsg = `Your financial health score is ${analytics.healthScore} out of 100. Savings rate is ${analytics.savingsRate.toFixed(1)} percent. Debt-to-income ratio is ${analytics.debtToIncome.toFixed(1)} percent. Financial stress probability is ${(analytics.stressProbability * 100).toFixed(0)} percent. ${analytics.tips[0] || ''}`;
-        speak(healthMsg);
-        break;
-
-      default:
-        speak('I didn\'t understand that. You can say things like "Add expense 2000 groceries", "My salary is 25000", "Check loan", or "How is my financial health".');
+  // Handle voice commands - triggers when finalTranscript changes
+  useEffect(() => {
+    if (finalTranscript) {
+      handleProcessVoice(finalTranscript);
     }
-    clearCommand();
-  }, [lastCommand, addTransaction, speak, clearCommand, analytics, toast]);
+  }, [finalTranscript]);
 
-  // Trigger command handling when lastCommand changes
-  if (lastCommand) {
-    handleVoiceCommand();
-  }
+  const handleProcessVoice = async (text: string) => {
+    speak('Processing...');
+
+    // Process the command with the LLM
+    const result = await processCommand(text);
+
+    // Handle UI navigation or feedback based on result/intent locally if needed
+    if (result) {
+      // Speak the natural language response from the LLM if available
+      // IMPORTANT: We must speak in the DETECTED language, not the UI language.
+      // We need to update useVoice to accept a language override in speak() or we just set it here?
+      // useVoice.speak uses currentLanguage state. We can't easily override it without modifying useVoice.
+      // Let's modify useVoice to accept an optional language arg first? 
+      // OR, we can just switch the UI language to the detected one? 
+      // Switching UI language might be jarring but correct for "Talk to me in the language I spoke".
+      // Let's try to map result.language_detected (e.g. "Hindi") to our Language codes.
+
+      const detectedLangCode = SUPPORTED_LANGUAGES.find(l =>
+        l.label.toLowerCase() === result.language_detected.toLowerCase() ||
+        l.code.split('-')[0] === result.language_detected.toLowerCase()
+      )?.code;
+
+      if (detectedLangCode && detectedLangCode !== currentLanguage) {
+        // Auto-switch language to match user? The user requested: "respond to me in the language I just talked".
+        setCurrentLanguage(detectedLangCode);
+        // Small delay to allow state update? speak() uses the state. 
+        // React state updates aren't instant. 
+        // Better: Update useVoice to accept lang override.
+      }
+
+      if (result.response) {
+        // speak(result.response, detectedLangCode); 
+        // Typescript might complain if detectedLangCode is undefined, so fallback to currentLanguage (undefined arg)
+        speak(result.response, detectedLangCode as Language);
+      } else {
+        // Fallback
+        if (result.intent === 'QUERY_ONLY') {
+          speak("Done.");
+        } else {
+          speak("Updated.");
+        }
+      }
+    } else {
+      speak("I didn't understand that.");
+    }
+
+    clearTranscript();
+  };
 
   return (
     <div className="min-h-screen bg-background">
@@ -115,6 +119,23 @@ export default function Dashboard() {
           </div>
 
           <div className="flex items-center gap-3">
+            {/* Language Selector */}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="ghost" size="sm" className="hidden sm:flex gap-2">
+                  <Globe className="h-4 w-4" />
+                  {SUPPORTED_LANGUAGES.find(l => l.code === currentLanguage)?.label}
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                {SUPPORTED_LANGUAGES.map((lang) => (
+                  <DropdownMenuItem key={lang.code} onClick={() => setCurrentLanguage(lang.code)}>
+                    {lang.label}
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+
             {/* Voice indicator */}
             {isListening && (
               <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-primary/10 border border-primary/30">
@@ -123,11 +144,29 @@ export default function Dashboard() {
               </div>
             )}
 
+            {/* Processing indicator */}
+            {isProcessing && (
+              <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-yellow-500/10 border border-yellow-500/30">
+                <Loader2 className="h-3 w-3 animate-spin text-yellow-600" />
+                <span className="text-xs text-yellow-600 font-medium">Processing...</span>
+              </div>
+            )}
+
             {transcript && (
               <span className="hidden md:block text-xs text-muted-foreground max-w-48 truncate">
                 "{transcript}"
               </span>
             )}
+
+            {/* Debug Toggle */}
+            <Button
+              variant={debugMode ? "default" : "ghost"}
+              size="sm"
+              onClick={() => setDebugMode(!debugMode)}
+              className="hidden sm:flex gap-2"
+            >
+              🐛
+            </Button>
 
             <VoiceButton isListening={isListening} onStart={startListening} onStop={stopListening} />
 
@@ -151,7 +190,7 @@ export default function Dashboard() {
             </h2>
             <p className="text-muted-foreground text-sm">
               {profile?.persona === 'student' ? '🎓 Student' : profile?.persona === 'farmer' ? '🌾 Farmer' : profile?.persona === 'shopkeeper' ? '🏪 Shopkeeper' : '💼 Salaried Worker'} •
-              Say <span className="text-primary font-medium">"Start Voice Mode"</span> or click the mic
+              Say <span className="text-primary font-medium">"My income is 50000"</span> or <span className="text-primary font-medium">"Spent 200 on food"</span>
             </p>
           </div>
           {/* Mobile tab switcher */}
@@ -175,6 +214,48 @@ export default function Dashboard() {
 
         {/* Safety Warnings */}
         <SafetyBanner warnings={analytics.warnings} />
+
+        {/* Debug Panel */}
+        {debugMode && (
+          <div className="bg-card border border-border rounded-lg p-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <h3 className="font-semibold text-sm flex items-center gap-2">
+                🐛 Debug Panel
+              </h3>
+              <span className="text-xs text-muted-foreground">Language: {currentLanguage}</span>
+            </div>
+            <div className="grid gap-2 text-sm">
+              <div className="flex gap-2">
+                <span className="font-medium text-muted-foreground min-w-24">Raw Transcript:</span>
+                <span className="text-primary font-mono">{transcript || '(none)'}</span>
+              </div>
+              <div className="flex gap-2">
+                <span className="font-medium text-muted-foreground min-w-24">Processing:</span>
+                <span className="font-mono">{isProcessing ? 'YES' : 'NO'}</span>
+              </div>
+              <div className="pt-2 border-t border-border mt-2">
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  className="w-full"
+                  onClick={async () => {
+                    if (confirm("ARE YOU SURE? This will delete ALL transactions and reset income.")) {
+                      await clearTransactions.mutateAsync();
+                      // Also reset profile income
+                      const { supabase } = await import('@/integrations/supabase/client');
+                      await supabase.from('profiles').update({ monthly_income: 0 }).eq('user_id', user?.id);
+
+                      toast({ title: "Data Reset", description: "All data cleared successfully." });
+                      window.location.reload();
+                    }
+                  }}
+                >
+                  ⚠️ EMERGENCY RESET DATA
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {showSettings && (
           <div className="animate-fade-in">
@@ -213,7 +294,7 @@ export default function Dashboard() {
 
         {activeTab === 'loans' && (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            <LoanChecker />
+            <LoanChecker currentLanguage={currentLanguage} />
             <FinancialInsights
               healthScore={analytics.healthScore}
               stressProbability={analytics.stressProbability}

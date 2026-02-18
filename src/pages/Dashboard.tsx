@@ -3,6 +3,7 @@ import { useAuth } from '@/hooks/useAuth';
 import { useVoice } from '@/hooks/useVoice';
 import { useTransactions } from '@/hooks/useTransactions';
 import { useFinancialAnalytics } from '@/hooks/useFinancialAnalytics';
+import { useLoans } from '@/hooks/useLoans';
 import { useProfile } from '@/hooks/useProfile';
 import { useCommandInterpreter } from '@/hooks/useCommandInterpreter';
 import { StatsCards } from '@/components/StatsCards';
@@ -26,16 +27,174 @@ import {
 
 export default function Dashboard() {
   const { signOut, user } = useAuth();
-  const { addTransaction, editTransaction, clearTransactions } = useTransactions();
-  const [currentLanguage, setCurrentLanguage] = useState<Language>('en-US');
-  const [debugMode, setDebugMode] = useState(false);
-  const { isListening, transcript, finalTranscript, startListening, stopListening, speak, clearTranscript } = useVoice(currentLanguage);
-  const { processCommand, isProcessing } = useCommandInterpreter();
+  const { addLoan } = useLoans();
+  const { clearTransactions } = useTransactions();
   const { profile } = useProfile();
-  const analytics = useFinancialAnalytics();
   const { toast } = useToast();
+
+  const {
+    monthlyIncome,
+    monthlyExpenses,
+    savingsRate,
+    debtToIncome,
+    healthScore,
+    totalEMI,
+    stressProbability,
+    defaultRisk,
+    tips,
+    warnings,
+    categoryBreakdown,
+    dailySpending,
+    monthlySpending,
+    expenseVolatility,
+    incomeStability
+  } = useFinancialAnalytics();
+
+  const analytics = {
+    monthlyIncome,
+    monthlyExpenses,
+    savingsRate,
+    debtToIncome,
+    healthScore,
+    totalEMI,
+    stressProbability,
+    defaultRisk,
+    tips,
+    warnings,
+    categoryBreakdown,
+    dailySpending,
+    monthlySpending,
+    expenseVolatility,
+    incomeStability
+  };
+
+  const [activeTab, setActiveTab] = useState('dashboard');
+  const [currentLanguage, setCurrentLanguage] = useState<Language>('en-US');
   const [showSettings, setShowSettings] = useState(false);
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'loans'>('dashboard');
+  const [debugMode, setDebugMode] = useState(false);
+
+  const {
+    isListening,
+    transcript,
+    finalTranscript,
+    startListening,
+    stopListening,
+    speak,
+    clearTranscript
+  } = useVoice(currentLanguage);
+
+  const { processCommand, isProcessing } = useCommandInterpreter();
+
+
+  // Loan Logic Lifted State
+  const [loanPrincipal, setLoanPrincipal] = useState('500000');
+  const [loanRate, setLoanRate] = useState('10');
+  const [loanTenure, setLoanTenure] = useState('60');
+  const [loanSimulation, setLoanSimulation] = useState<any>(null);
+
+  const handleCheckLoan = async () => {
+    const p = parseFloat(loanPrincipal);
+    const r = parseFloat(loanRate);
+    const n = parseInt(loanTenure);
+    if (!p || !r || !n) return;
+
+    // Dynamically import financial utils
+    const {
+      calculateEMI,
+      calculateDebtToIncome,
+      getRiskLevel,
+      getPersonalizedTips,
+      calculateFinancialHealthScore,
+      getFinancialStressProbability
+    } = await import('@/lib/financial');
+
+    const newEMI = calculateEMI(p, r, n);
+    const newTotalEMI = analytics.totalEMI + newEMI;
+    const effectiveIncome = analytics.monthlyIncome || Number(profile?.monthly_income) || 50000;
+    const newDTI = calculateDebtToIncome(newTotalEMI, effectiveIncome);
+
+    // We keep savingsRate etc constant for simulation for now
+    const newHealthScore = calculateFinancialHealthScore(
+      analytics.savingsRate,
+      newDTI,
+      analytics.expenseVolatility,
+      analytics.incomeStability
+    );
+
+    const newStressProbability = getFinancialStressProbability(
+      analytics.savingsRate,
+      newDTI,
+      analytics.expenseVolatility,
+      analytics.incomeStability
+    );
+
+    const risk = getRiskLevel(newDTI);
+    const annualIncome = effectiveIncome * 12;
+    const warning = p > annualIncome * 5 ? `⚠️ Loan amount exceeds 5x your annual income (₹${annualIncome.toLocaleString()})` : null;
+    const tips = getPersonalizedTips(analytics.savingsRate, newDTI, analytics.expenseVolatility, profile?.persona || 'salaried');
+
+    const simulationData = {
+      emi: newEMI,
+      before: {
+        dti: analytics.debtToIncome,
+        healthScore: analytics.healthScore,
+        stress: analytics.stressProbability,
+      },
+      after: {
+        dti: newDTI,
+        healthScore: newHealthScore,
+        stress: newStressProbability,
+      },
+      risk,
+      tips,
+      warning
+    };
+
+    setLoanSimulation(simulationData);
+
+    // Speak results
+    const { getFinancialAdvice } = await import('@/lib/interpreter');
+    const fallbackText = `Your new monthly EMI will be ${Math.round(newEMI)}. Your Debt to Income ratio will go from ${analytics.debtToIncome.toFixed(1)} percent to ${newDTI.toFixed(1)} percent. Risk level is ${risk.label}.`;
+
+    try {
+      const aiResponse = await getFinancialAdvice({
+        type: 'loan_simulation',
+        emi: Math.round(newEMI),
+        risk: risk.label,
+        warning,
+        before: {
+          dti: analytics.debtToIncome.toFixed(1),
+          healthScore: analytics.healthScore,
+          stress: (analytics.stressProbability * 100).toFixed(0)
+        },
+        after: {
+          dti: newDTI.toFixed(1),
+          healthScore: newHealthScore,
+          stress: (newStressProbability * 100).toFixed(0)
+        },
+        tips
+      }, currentLanguage);
+      speak(aiResponse || fallbackText);
+    } catch (e) {
+      console.error(e);
+      speak(fallbackText);
+    }
+  };
+
+  const handleSaveLoan = () => {
+    if (!loanSimulation) return;
+    addLoan.mutate({
+      loan_amount: parseFloat(loanPrincipal),
+      interest_rate: parseFloat(loanRate),
+      tenure: parseInt(loanTenure),
+      emi: Math.round(loanSimulation.emi),
+      risk_score: loanSimulation.after.dti,
+      risk_level: loanSimulation.risk.level,
+      debt_to_income: loanSimulation.after.dti,
+    }, {
+      onSuccess: () => toast({ title: 'Loan saved to history' }),
+    });
+  };
 
   // Handle voice commands - triggers when finalTranscript changes
   useEffect(() => {
@@ -44,47 +203,120 @@ export default function Dashboard() {
     }
   }, [finalTranscript]);
 
+  const executeSimulation = async (p: number, r: number, n: number) => {
+    // Dynamically import financial utils
+    const {
+      calculateEMI,
+      calculateDebtToIncome,
+      getRiskLevel,
+      getPersonalizedTips,
+      calculateFinancialHealthScore,
+      getFinancialStressProbability
+    } = await import('@/lib/financial');
+
+    const newEMI = calculateEMI(p, r, n);
+    const newTotalEMI = analytics.totalEMI + newEMI;
+    const effectiveIncome = analytics.monthlyIncome || Number(profile?.monthly_income) || 50000;
+    const newDTI = calculateDebtToIncome(newTotalEMI, effectiveIncome);
+
+    // We keep savingsRate etc constant for simulation for now
+    const newHealthScore = calculateFinancialHealthScore(
+      analytics.savingsRate,
+      newDTI,
+      analytics.expenseVolatility,
+      analytics.incomeStability
+    );
+
+    const newStressProbability = getFinancialStressProbability(
+      analytics.savingsRate,
+      newDTI,
+      analytics.expenseVolatility,
+      analytics.incomeStability
+    );
+
+    const risk = getRiskLevel(newDTI);
+    const annualIncome = effectiveIncome * 12;
+    const warning = p > annualIncome * 5 ? `⚠️ Loan amount exceeds 5x your annual income (₹${annualIncome.toLocaleString()})` : null;
+    const tips = getPersonalizedTips(analytics.savingsRate, newDTI, analytics.expenseVolatility, profile?.persona || 'salaried');
+
+    const simulationData = {
+      emi: newEMI,
+      before: {
+        dti: analytics.debtToIncome,
+        healthScore: analytics.healthScore,
+        stress: analytics.stressProbability,
+      },
+      after: {
+        dti: newDTI,
+        healthScore: newHealthScore,
+        stress: newStressProbability,
+      },
+      risk,
+      tips,
+      warning
+    };
+
+    setLoanSimulation(simulationData);
+
+    // Speak results
+    const { getFinancialAdvice } = await import('@/lib/interpreter');
+    const fallbackText = `Your new monthly EMI will be ${Math.round(newEMI)}. Your Debt to Income ratio will go from ${analytics.debtToIncome.toFixed(1)} percent to ${newDTI.toFixed(1)} percent. Risk level is ${risk.label}.`;
+
+    try {
+      const aiResponse = await getFinancialAdvice({
+        type: 'loan_simulation',
+        emi: Math.round(newEMI),
+        risk: risk.label,
+        warning,
+        before: {
+          dti: analytics.debtToIncome.toFixed(1),
+          healthScore: analytics.healthScore,
+          stress: (analytics.stressProbability * 100).toFixed(0)
+        },
+        after: {
+          dti: newDTI.toFixed(1),
+          healthScore: newHealthScore,
+          stress: (newStressProbability * 100).toFixed(0)
+        },
+        tips
+      }, currentLanguage);
+      speak(aiResponse || fallbackText);
+    } catch (e) {
+      console.error(e);
+      speak(fallbackText);
+    }
+  };
+
   const handleProcessVoice = async (text: string) => {
     speak('Processing...');
 
     // Process the command with the LLM
     const result = await processCommand(text);
 
-    // Handle UI navigation or feedback based on result/intent locally if needed
     if (result) {
-      // Speak the natural language response from the LLM if available
-      // IMPORTANT: We must speak in the DETECTED language, not the UI language.
-      // We need to update useVoice to accept a language override in speak() or we just set it here?
-      // useVoice.speak uses currentLanguage state. We can't easily override it without modifying useVoice.
-      // Let's modify useVoice to accept an optional language arg first? 
-      // OR, we can just switch the UI language to the detected one? 
-      // Switching UI language might be jarring but correct for "Talk to me in the language I spoke".
-      // Let's try to map result.language_detected (e.g. "Hindi") to our Language codes.
-
       const detectedLangCode = SUPPORTED_LANGUAGES.find(l =>
         l.label.toLowerCase() === result.language_detected.toLowerCase() ||
         l.code.split('-')[0] === result.language_detected.toLowerCase()
       )?.code;
 
       if (detectedLangCode && detectedLangCode !== currentLanguage) {
-        // Auto-switch language to match user? The user requested: "respond to me in the language I just talked".
         setCurrentLanguage(detectedLangCode);
-        // Small delay to allow state update? speak() uses the state. 
-        // React state updates aren't instant. 
-        // Better: Update useVoice to accept lang override.
       }
 
-      if (result.response) {
-        // speak(result.response, detectedLangCode); 
-        // Typescript might complain if detectedLangCode is undefined, so fallback to currentLanguage (undefined arg)
-        speak(result.response, detectedLangCode as Language);
-      } else {
-        // Fallback
-        if (result.intent === 'QUERY_ONLY') {
-          speak("Done.");
-        } else {
-          speak("Updated.");
+      if (result.intent === 'SIMULATE_LOAN') {
+        setActiveTab('loans');
+        let p = parseFloat(loanPrincipal);
+        if (result.amount) {
+          setLoanPrincipal(result.amount.toString());
+          p = result.amount;
         }
+        await executeSimulation(p, parseFloat(loanRate), parseInt(loanTenure));
+      } else if (result.response) {
+        speak(result.response, detectedLangCode as Language);
+      } else if (result.intent === 'QUERY_ONLY') {
+        speak("Done.");
+      } else {
+        speak("Updated.");
       }
     } else {
       speak("I didn't understand that.");
@@ -92,6 +324,7 @@ export default function Dashboard() {
 
     clearTranscript();
   };
+
 
   return (
     <div className="min-h-screen bg-background">
@@ -294,7 +527,18 @@ export default function Dashboard() {
 
         {activeTab === 'loans' && (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            <LoanChecker currentLanguage={currentLanguage} />
+            <LoanChecker
+              currentLanguage={currentLanguage}
+              principal={loanPrincipal}
+              setPrincipal={setLoanPrincipal}
+              rate={loanRate}
+              setRate={setLoanRate}
+              tenure={loanTenure}
+              setTenure={setLoanTenure}
+              simulation={loanSimulation}
+              onCheck={handleCheckLoan}
+              onSave={handleSaveLoan}
+            />
             <FinancialInsights
               healthScore={analytics.healthScore}
               stressProbability={analytics.stressProbability}

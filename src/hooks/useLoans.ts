@@ -50,5 +50,13 @@ export function useLoans() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['loans'] }),
   });
 
-  return { loans, isLoading, addLoan };
+  const deleteLoan = useMutation({
+    mutationFn: async (id: string) => {
+      const { error } = await supabase.from('loan_history').delete().eq('id', id);
+      if (error) throw error;
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['loans'] }),
+  });
+
+  return { loans, isLoading, addLoan, deleteLoan };
 }

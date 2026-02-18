@@ -2,7 +2,7 @@
 import { SYSTEM_PROMPT } from './prompts';
 
 export interface CommandResult {
-    intent: 'SET_VALUE' | 'ADD_VALUE' | 'SUBTRACT_VALUE' | 'QUERY_ONLY';
+    intent: 'SET_VALUE' | 'ADD_VALUE' | 'SUBTRACT_VALUE' | 'QUERY_ONLY' | 'SIMULATE_LOAN';
     category: 'income' | 'expense' | 'savings' | 'other' | 'loan';
     amount: number | null;
     currency: string | null;
@@ -105,15 +105,22 @@ export async function getFinancialAdvice(data: any, language: string): Promise<s
     const model = "gemini-2.0-flash";
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
+    const isSimulation = data.type === 'loan_simulation';
+
+    let instructions = "Keep it short (1-2 sentences).";
+    if (isSimulation) {
+        instructions = "Provide a comprehensive spoken summary. detailedly Compare 'Before' vs 'After' for Debt-to-Income, Health Score, and Stress Risk. State the new EMI explicitly. Explain the risk level and read any warnings clearly.";
+    }
+
     const prompt = `
     You are a financial assistant.
     The user speaks: ${language}.
     
     Convert this financial data into a helpful, natural spoken response in ${language}.
-    Keep it short (1-2 sentences).
+    ${instructions}
     
     Data:
-    ${JSON.stringify(data)}
+    ${JSON.stringify(data, null, 2)}
     
     Response (Text only, no markdown):
     `;

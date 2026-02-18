@@ -35,8 +35,16 @@ COMMAND INTERPRETATION RULES
    * “add expense 300”
      → ACTION TYPE = ADD_VALUE (Category: expense)
 
-5. If the user asks for ADVICE or INFORMATION:
-   * "Should I take this loan?"
+
+5. If the user says:
+   * "Simulate Impact"
+   * "Check Loan"
+   * "Calculate EMI for 50000"
+   * "Will this loan affect my health score?"
+     → ACTION TYPE = SIMULATE_LOAN (Category: loan)
+     → If an amount is mentioned, extract it to 'amount'.
+
+6. If the user asks for ADVICE or INFORMATION:
    * "How much can I spend?"
    * "Ennoda loan history eppadi irukku?" (Tamil for "How is my loan history?")
      → ACTION TYPE = QUERY_ONLY
@@ -48,11 +56,12 @@ Before performing any calculation, classify the command as one of:
 * SET_VALUE
 * ADD_VALUE
 * SUBTRACT_VALUE
+
 * QUERY_ONLY
 
 OUTPUT FORMAT (STRICT JSON ONLY)
 {
-"intent": "SET_VALUE | ADD_VALUE | SUBTRACT_VALUE | QUERY_ONLY",
+"intent": "SET_VALUE | ADD_VALUE | SUBTRACT_VALUE | SIMULATE_LOAN | QUERY_ONLY",
 "category": "income | expense | savings | other | loan",
 "amount": number | null,
 "currency": "detected currency or null",

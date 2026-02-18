@@ -5,89 +5,55 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { useLoans } from '@/hooks/useLoans';
 import { useProfile } from '@/hooks/useProfile';
-import { calculateEMI, calculateDebtToIncome, getRiskLevel, getPersonalizedTips } from '@/lib/financial';
+import { useFinancialAnalytics } from '@/hooks/useFinancialAnalytics';
+import {
+  calculateEMI,
+  calculateDebtToIncome,
+  getRiskLevel,
+  getPersonalizedTips,
+  calculateFinancialHealthScore,
+  getFinancialStressProbability
+} from '@/lib/financial';
 import { useToast } from '@/hooks/use-toast';
 import { useVoice } from '@/hooks/useVoice';
-
 import { getFinancialAdvice } from '@/lib/interpreter';
 import { Language } from '@/lib/languages';
+import { ArrowRight, Info } from 'lucide-react';
 
 interface LoanCheckerProps {
   currentLanguage: Language;
+  principal: string;
+  setPrincipal: (val: string) => void;
+  rate: string;
+  setRate: (val: string) => void;
+  tenure: string;
+  setTenure: (val: string) => void;
+  simulation: any;
+  onCheck: () => void;
+  onSave: () => void;
 }
 
-export function LoanChecker({ currentLanguage }: LoanCheckerProps) {
-  const [principal, setPrincipal] = useState('');
-  const [rate, setRate] = useState('10');
-  const [tenure, setTenure] = useState('60');
-  const [result, setResult] = useState<{
-    emi: number;
-    dti: number;
-    risk: ReturnType<typeof getRiskLevel>;
-    tips: string[];
-    warning: string | null;
-  } | null>(null);
-
-  const { addLoan } = useLoans();
-  const { profile } = useProfile();
+export function LoanChecker({
+  currentLanguage,
+  principal, setPrincipal,
+  rate, setRate,
+  tenure, setTenure,
+  simulation,
+  onCheck,
+  onSave
+}: LoanCheckerProps) {
+  const { addLoan, loans, deleteLoan } = useLoans();
   const { toast } = useToast();
-  const { speak } = useVoice(currentLanguage);
-
-  const handleCheck = () => {
-    const p = parseFloat(principal);
-    const r = parseFloat(rate);
-    const n = parseInt(tenure);
-    if (!p || !r || !n) return;
-
-    const emi = calculateEMI(p, r, n);
-    const monthlyIncome = Number(profile?.monthly_income) || 50000;
-    const dti = calculateDebtToIncome(emi, monthlyIncome);
-    const risk = getRiskLevel(dti);
-    const annualIncome = monthlyIncome * 12;
-    const warning = p > annualIncome * 5 ? `⚠️ Loan amount exceeds 5x your annual income (₹${annualIncome.toLocaleString()})` : null;
-    const tips = getPersonalizedTips(0, dti, 0, profile?.persona || 'salaried');
-
-    setResult({ emi, dti, risk, tips, warning });
-
-    setResult({ emi, dti, risk, tips, warning });
-
-    // Speak the result in the user's language
-    // We use the LLM to humanize the data into the target language
-    getFinancialAdvice({
-      emi: Math.round(emi),
-      debtToIncome: dti.toFixed(1),
-      risk: risk.label,
-      warning
-    }, currentLanguage).then(response => {
-      speak(response);
-    });
-  };
-
-  const handleSaveLoan = () => {
-    if (!result) return;
-    const p = parseFloat(principal);
-    const r = parseFloat(rate);
-    const n = parseInt(tenure);
-    addLoan.mutate({
-      loan_amount: p,
-      interest_rate: r,
-      tenure: n,
-      emi: Math.round(result.emi),
-      risk_score: result.dti,
-      risk_level: result.risk.level,
-      debt_to_income: result.dti,
-    }, {
-      onSuccess: () => toast({ title: 'Loan saved to history' }),
-    });
-  };
 
   return (
     <Card className="glass-card">
       <CardHeader>
-        <CardTitle className="font-display text-lg">Loan Checker</CardTitle>
+        <CardTitle className="font-display text-lg flex items-center gap-2">
+          Loan Impact Simulator
+        </CardTitle>
       </CardHeader>
-      <CardContent className="space-y-4">
-        <div className="grid grid-cols-3 gap-2">
+      <CardContent className="space-y-6">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <div>
             <Label className="text-xs">Amount (₹)</Label>
             <Input type="number" value={principal} onChange={(e) => setPrincipal(e.target.value)} placeholder="500000" />
@@ -97,60 +63,143 @@ export function LoanChecker({ currentLanguage }: LoanCheckerProps) {
             <Input type="number" value={rate} onChange={(e) => setRate(e.target.value)} />
           </div>
           <div>
-            <Label className="text-xs">Months</Label>
+            <Label className="text-xs">Tenure (Months)</Label>
             <Input type="number" value={tenure} onChange={(e) => setTenure(e.target.value)} />
           </div>
         </div>
 
-        <Button onClick={handleCheck} className="w-full">Check Loan Eligibility</Button>
+        <Button onClick={onCheck} className="w-full bg-primary hover:bg-primary/90 text-white">
+          Simulate Impact
+        </Button>
 
-        {result && (
-          <div className="space-y-3 animate-fade-in">
-            <div className={`p-4 rounded-lg border ${result.risk.level === 'safe' ? 'bg-primary/10 border-primary/30' :
-              result.risk.level === 'caution' ? 'bg-warning/10 border-warning/30' :
-                'bg-destructive/10 border-destructive/30'
+        {simulation && (
+          <div className="space-y-6 animate-fade-in">
+            {/* Quick Summary Banner */}
+            <div className={`p-4 rounded-lg border flex items-center justify-between ${simulation.risk.level === 'safe' ? 'bg-primary/10 border-primary/30' :
+                simulation.risk.level === 'caution' ? 'bg-warning/10 border-warning/30' :
+                  'bg-destructive/10 border-destructive/30'
               }`}>
-              <div className="grid grid-cols-2 gap-3 text-sm">
-                <div>
-                  <span className="text-muted-foreground">Monthly EMI</span>
-                  <p className="font-display font-bold text-lg">₹{Math.round(result.emi).toLocaleString()}</p>
-                </div>
-                <div>
-                  <span className="text-muted-foreground">Risk Level</span>
-                  <p className={`font-display font-bold text-lg ${result.risk.level === 'safe' ? 'text-primary' :
-                    result.risk.level === 'caution' ? 'text-warning' :
+              <div>
+                <p className="text-sm font-medium opacity-80">New Monthly EMI</p>
+                <p className="text-2xl font-bold font-display">₹{Math.round(simulation.emi).toLocaleString()}</p>
+              </div>
+              <div className="text-right">
+                <p className="text-sm font-medium opacity-80">Risk Assessment</p>
+                <p className={`text-xl font-bold ${simulation.risk.level === 'safe' ? 'text-primary' :
+                    simulation.risk.level === 'caution' ? 'text-warning' :
                       'text-destructive'
-                    }`}>{result.risk.label}</p>
+                  }`}>{simulation.risk.label}</p>
+              </div>
+            </div>
+
+            {/* Impact Comparison Grid */}
+            <div className="grid grid-cols-3 gap-4">
+              <div className="p-3 bg-card/50 rounded-lg border space-y-2">
+                <p className="text-xs text-muted-foreground">Debt-to-Income</p>
+                <div className="flex items-end justify-between">
+                  <div>
+                    <span className="text-sm text-muted-foreground">{simulation.before.dti.toFixed(1)}%</span>
+                  </div>
+                  <ArrowRight className="w-4 h-4 text-muted-foreground mb-1" />
+                  <div className="text-right">
+                    <span className={`text-lg font-bold ${simulation.after.dti > 40 ? 'text-destructive' : 'text-primary'
+                      }`}>{simulation.after.dti.toFixed(1)}%</span>
+                  </div>
                 </div>
-                <div>
-                  <span className="text-muted-foreground">Debt-to-Income</span>
-                  <p className="font-bold">{result.dti.toFixed(1)}%</p>
+              </div>
+
+              <div className="p-3 bg-card/50 rounded-lg border space-y-2">
+                <p className="text-xs text-muted-foreground">Financial Health</p>
+                <div className="flex items-end justify-between">
+                  <div>
+                    <span className="text-sm text-muted-foreground">{simulation.before.healthScore}</span>
+                  </div>
+                  <ArrowRight className="w-4 h-4 text-muted-foreground mb-1" />
+                  <div className="text-right">
+                    <span className={`text-lg font-bold ${simulation.after.healthScore < simulation.before.healthScore ? 'text-warning' : 'text-primary'
+                      }`}>{simulation.after.healthScore}</span>
+                  </div>
                 </div>
-                <div>
-                  <span className="text-muted-foreground">Status</span>
-                  <p className="font-bold">{result.risk.level === 'safe' ? '✅ Affordable' : result.risk.level === 'caution' ? '⚠️ Tight' : '🚫 Risky'}</p>
+              </div>
+
+              <div className="p-3 bg-card/50 rounded-lg border space-y-2">
+                <p className="text-xs text-muted-foreground">Stress Probability</p>
+                <div className="flex items-end justify-between">
+                  <div>
+                    <span className="text-sm text-muted-foreground">{(simulation.before.stress * 100).toFixed(0)}%</span>
+                  </div>
+                  <ArrowRight className="w-4 h-4 text-muted-foreground mb-1" />
+                  <div className="text-right">
+                    <span className={`text-lg font-bold ${simulation.after.stress > simulation.before.stress ? 'text-destructive' : 'text-primary'
+                      }`}>{(simulation.after.stress * 100).toFixed(0)}%</span>
+                  </div>
                 </div>
               </div>
             </div>
 
-            {result.warning && (
-              <div className="p-3 rounded-lg bg-destructive/10 border border-destructive/30 text-sm text-destructive">
-                {result.warning}
+            {simulation.warning && (
+              <div className="flex items-start gap-2 p-3 rounded-lg bg-destructive/10 border border-destructive/30 text-sm text-destructive">
+                <Info className="w-4 h-4 mt-0.5 flex-shrink-0" />
+                <p>{simulation.warning}</p>
               </div>
             )}
 
-            <div className="space-y-1">
-              <p className="text-xs text-muted-foreground font-medium">Recommended Actions:</p>
-              {result.tips.map((tip, i) => (
-                <p key={i} className="text-sm text-secondary-foreground">• {tip}</p>
-              ))}
+            <div className="space-y-2">
+              <p className="text-sm font-medium text-muted-foreground">Personalized Insights</p>
+              <ul className="space-y-1">
+                {simulation.tips.map((tip, i) => (
+                  <li key={i} className="text-sm text-secondary-foreground flex items-center gap-2">
+                    <span className="w-1.5 h-1.5 rounded-full bg-primary flex-shrink-0" />
+                    {tip}
+                  </li>
+                ))}
+              </ul>
             </div>
 
-            <Button variant="secondary" onClick={handleSaveLoan} className="w-full" disabled={addLoan.isPending}>
+            <Button variant="secondary" onClick={onSave} className="w-full" disabled={addLoan.isPending}>
               Save to Loan History
             </Button>
           </div>
         )}
+
+        {/* Loan History Section */}
+        <div className="pt-6 border-t">
+          <h3 className="font-display font-semibold mb-4">Loan History</h3>
+          <div className="space-y-3">
+            {loans?.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No saved loans yet.</p>
+            ) : (
+              loans.map((loan: any) => (
+                <div key={loan.id} className="p-3 bg-secondary/20 rounded-lg border flex items-center justify-between">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <p className="font-bold">₹{loan.loan_amount.toLocaleString()}</p>
+                      <span className={`text-xs px-2 py-0.5 rounded-full ${loan.risk_level === 'safe' ? 'bg-green-500/10 text-green-500' :
+                        loan.risk_level === 'caution' ? 'bg-yellow-500/10 text-yellow-500' :
+                          'bg-red-500/10 text-red-500'
+                        }`}>
+                        {loan.risk_level?.toUpperCase()}
+                      </span>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      EMI: ₹{loan.emi.toLocaleString()} • {loan.tenure}m @ {loan.interest_rate}%
+                    </p>
+                  </div>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="text-destructive hover:bg-destructive/10"
+                    onClick={() => deleteLoan.mutate(loan.id, {
+                      onSuccess: () => toast({ title: 'Loan deleted' })
+                    })}
+                  >
+                    Delete
+                  </Button>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
       </CardContent>
     </Card>
   );

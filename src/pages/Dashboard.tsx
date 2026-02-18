@@ -204,6 +204,9 @@ export default function Dashboard() {
   }, [finalTranscript]);
 
   const executeSimulation = async (p: number, r: number, n: number) => {
+    speak("Generating impact report...", currentLanguage);
+    toast({ title: "Generating Report", description: "Analyzing loan impact..." });
+
     // Dynamically import financial utils
     const {
       calculateEMI,
@@ -263,6 +266,7 @@ export default function Dashboard() {
     const fallbackText = `Your new monthly EMI will be ${Math.round(newEMI)}. Your Debt to Income ratio will go from ${analytics.debtToIncome.toFixed(1)} percent to ${newDTI.toFixed(1)} percent. Risk level is ${risk.label}.`;
 
     try {
+      // Pass currentLanguage code, interpreter will look up the label
       const aiResponse = await getFinancialAdvice({
         type: 'loan_simulation',
         emi: Math.round(newEMI),
@@ -280,10 +284,17 @@ export default function Dashboard() {
         },
         tips
       }, currentLanguage);
-      speak(aiResponse || fallbackText);
-    } catch (e) {
+
+      speak(aiResponse || fallbackText, currentLanguage);
+    } catch (e: any) {
       console.error(e);
-      speak(fallbackText);
+      // Show the actual error in a toast for easier debugging
+      toast({
+        variant: "destructive",
+        title: "Report Generation Failed",
+        description: e.message || "Unknown error occurred"
+      });
+      speak(fallbackText, currentLanguage);
     }
   };
 

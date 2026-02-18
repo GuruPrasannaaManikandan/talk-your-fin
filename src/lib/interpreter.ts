@@ -67,25 +67,41 @@ Respond with ONLY the JSON.`
 
             if (!response.ok) {
                 const errorText = await response.text();
-                // If 404, try next model. For other errors (403, 500), maybe throw immediately? 
-                // Let's safe-fail and try others just in case permission varies by model.
-                console.warn(`Model ${model} failed: ${response.status} ${errorText}`);
-                lastError = new Error(`LLM Error (${model}): ${response.status} ${errorText}`);
+                console.error(`❌ Model ${model} FAILED: Status ${response.status}`);
+                console.error(`Response Body: ${errorText}`);
                 continue;
             }
 
             const data = await response.json();
             const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text;
 
-            if (!rawText) throw new Error("Empty response from LLM");
+            if (!rawText) {
+                console.warn(`⚠️ Model ${model} returned empty text. Full Response:`, data);
+                continue;
+            }
 
-            // Clean markdown manually if present
-            const jsonStr = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
+            console.log(`✅ Model ${model} Raw Response:`, rawText);
 
-            return JSON.parse(jsonStr) as CommandResult;
+            // Robust JSON cleaning
+            let jsonStr = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
+
+            // Sometimes models return text before/after JSON, try to extract just the JSON object
+            const jsonMatch = jsonStr.match(/\{[\s\S]*\}/);
+            if (jsonMatch) {
+                jsonStr = jsonMatch[0];
+            }
+
+            try {
+                const result = JSON.parse(jsonStr) as CommandResult;
+                return result;
+            } catch (parseError) {
+                console.error(`❌ JSON Parse Error for model ${model}:`, parseError);
+                console.error(`Failed JSON String:`, jsonStr);
+                continue; // Try next model if parsing fails
+            }
 
         } catch (error) {
-            console.warn(`Error with model ${model}:`, error);
+            console.error(`❌ EXCEPTION with model ${model}:`, error);
             lastError = error;
             // continue loop
         }
@@ -96,49 +112,96 @@ Respond with ONLY the JSON.`
     throw lastError || new Error("Failed to connect to any Gemini model. Please check your API Key.");
 }
 
-export async function getFinancialAdvice(data: any, language: string): Promise<string> {
+export async function getFinancialAdvice(data: any, languageCode: string): Promise<string> {
     const apiKey = import.meta.env.VITE_LLM_API_KEY;
 
     // Fallback if key missing (though app should block earlier)
     if (!apiKey) return "API Key missing.";
 
-    const model = "gemini-2.0-flash";
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+    const modelsToTry = [
+        "gemini-2.0-flash",
+        "gemini-1.5-flash",
+        "gemini-1.5-pro",
+        "gemini-pro",
+        "gemini-flash-latest"
+    ];
 
     const isSimulation = data.type === 'loan_simulation';
 
+    // Get full language name
+    const { SUPPORTED_LANGUAGES } = await import('./languages');
+    const langLabel = SUPPORTED_LANGUAGES.find(l => l.code === languageCode)?.label || 'English';
+
     let instructions = "Keep it short (1-2 sentences).";
     if (isSimulation) {
-        instructions = "Provide a comprehensive spoken summary. detailedly Compare 'Before' vs 'After' for Debt-to-Income, Health Score, and Stress Risk. State the new EMI explicitly. Explain the risk level and read any warnings clearly.";
+        instructions = `
+        You are a financial advisor talking directly to the user.
+        The user has selected ${langLabel} as their language.
+        
+        TASK:
+        Generate a spoken response in ${langLabel} (using ${langLabel} script/characters, NOT transliteration).
+        Do NOT say "Report generated". Speak the actual report details immediately.
+        
+        CONTENT TO COVER:
+        1. Start immediately with the new EMI amount. (e.g., "Your new EMI is...").
+        2. Compare 'Before' vs 'After' for Debt-to-Income Ratio and Health Score. (e.g., "DTI increases from X to Y").
+        3. Mention the Risk Level (${data.risk}).
+        4. Read any specific warnings.
+        
+        Tone: Professional, helpful, and clear.
+        Length: Around 4-5 sentences.
+        `;
     }
 
     const prompt = `
-    You are a financial assistant.
-    The user speaks: ${language}.
-    
-    Convert this financial data into a helpful, natural spoken response in ${language}.
-    ${instructions}
-    
-    Data:
+    Input Data:
     ${JSON.stringify(data, null, 2)}
     
-    Response (Text only, no markdown):
+    Instructions:
+    ${instructions}
+    
+    Generate the spoken response text only (no markdown, no bullets, just the text to speak).
     `;
 
-    try {
-        const response = await fetch(url, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                contents: [{ parts: [{ text: prompt }] }]
-            })
-        });
+    let lastError: any = null;
 
-        const json = await response.json();
-        const text = json.candidates?.[0]?.content?.parts?.[0]?.text;
-        return text || "Error generating advice.";
-    } catch (e) {
-        console.error("Advice Gen Error", e);
-        return "Sorry, I could not generate advice right now.";
+    for (const model of modelsToTry) {
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+
+        try {
+            console.log(`Attempting Advice Gen with model: ${model}`);
+            const response = await fetch(url, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    contents: [{ parts: [{ text: prompt }] }]
+                })
+            });
+
+            if (!response.ok) {
+                const errorText = await response.text();
+                console.error(`❌ Model ${model} FAILED: Status ${response.status}`);
+                console.error(`Response Body: ${errorText}`);
+                continue; // Try next model
+            }
+
+            const json = await response.json();
+            const text = json.candidates?.[0]?.content?.parts?.[0]?.text;
+
+            if (!text) {
+                console.warn(`⚠️ Model ${model} returned empty text. Full JSON:`, json);
+                continue; // Try next model
+            }
+
+            return text;
+
+        } catch (e) {
+            console.error(`❌ EXCEPTION with model ${model}:`, e);
+            // continue loop
+        }
     }
+
+    // All models failed. Throw the last error to be caught by the UI.
+    const lastErrorMsg = lastError?.message || "All models failed to respond.";
+    throw new Error(lastErrorMsg);
 }
